@@ -158,19 +158,27 @@ def kakaocli(args):
 
 
 def resolve_chat(target):
-    """target -> (chat_id, send_name). 읽기는 id, 전송은 이름."""
+    """target -> (chat_id, send_name). 읽기는 id, 전송은 이름.
+    이름은 정확 매칭을 우선하고, 없으면 부분 매칭으로 fallback한다
+    ("A톡방"과 "A톡방2"가 같이 있을 때 엉뚱한 쪽으로 매칭되는 것 방지)."""
     out = kakaocli(["chats"])
+    partial = None
     for line in out.splitlines():
         if not (line.startswith("[") and "]" in line):
             continue
         cid = line[1:line.index("]")]
         rest = line[line.index("]") + 1:].strip()
+        name = rest.rsplit(" ", 1)[0] if " " in rest else rest
         if target.isdigit():
             if cid == target:
-                return cid, (rest.rsplit(" ", 1)[0] if " " in rest else rest)
+                return cid, name
         else:
-            if target in rest:
+            if target in (rest, name):              # 정확 매칭 우선
                 return cid, target
+            if partial is None and target in rest:  # 부분 매칭은 첫 건만 보관
+                partial = (cid, target)
+    if partial:
+        return partial
     raise RuntimeError(f"TARGET '{target}' 채팅을 찾지 못함")
 
 
@@ -331,7 +339,17 @@ def run_cycle(client, cfg, system_prompt, state):
         return "ok"
 
     context_msgs = messages[-cfg.context_limit:]
-    decision = decide(client, cfg, system_prompt, context_msgs)
+    try:
+        decision = decide(client, cfg, system_prompt, context_msgs)
+    except Exception as e:
+        # 응답 판단/JSON 파싱 실패(예: max_tokens 잘림, 빈 응답). 같은 trigger로
+        # 매 사이클 재호출(비용 누적)하지 않도록 상태를 전진시키고 넘어간다.
+        state["responded_ids"].append(trigger["id"])
+        state["responded_ids"] = state["responded_ids"][-200:]
+        state["last_processed_id"] = newest_id
+        save_state(cfg, state)
+        log(cfg, "DECIDE_FAILED", trigger_id=trigger["id"], error=str(e))
+        return "ok"
     drafts = [d.strip() for d in decision.get("messages", []) if d.strip()]
 
     log(cfg, "DRAFT", trigger_id=trigger["id"], trigger_text=trigger.get("text"),
@@ -360,23 +378,31 @@ def run_cycle(client, cfg, system_prompt, state):
         log(cfg, "STOP", msg="대기 중 STOP 감지, 전송 취소")
         return "stop"
 
-    for i, text in enumerate(drafts):
-        send_message(cfg, text)
-        now = datetime.now(timezone.utc)
-        state["last_sent_ts"] = now.isoformat()
-        state["sent_timestamps"].append(now.isoformat())
-        log(cfg, "SENT", idx=i, text=text)
-        if i < len(drafts) - 1:
-            time.sleep(random.uniform(1.5, 4.0))
-
+    sent_count = 0
     try:
-        after = fetch_messages(cfg.chat_id, 20)
-        for m in after:
-            if m.get("is_from_me") and m["id"] not in state["sent_ids"]:
-                state["sent_ids"].append(m["id"])
-        state["sent_ids"] = state["sent_ids"][-200:]
+        for i, text in enumerate(drafts):
+            send_message(cfg, text)
+            now = datetime.now(timezone.utc)
+            state["last_sent_ts"] = now.isoformat()
+            state["sent_timestamps"].append(now.isoformat())
+            sent_count += 1
+            log(cfg, "SENT", idx=i, text=text)
+            if i < len(drafts) - 1:
+                time.sleep(random.uniform(1.5, 4.0))
     except Exception as e:
-        log(cfg, "WARN", msg=f"전송 후 재조회 실패: {e}")
+        # 다중 메시지 중 일부만 나가고 실패해도, 이미 나간 내 메시지는
+        # 아래 재조회로 sent_ids에 반드시 기록한다(루프 방지·말투 학습 오염 방지).
+        log(cfg, "SEND_FAILED", idx=sent_count, error=str(e))
+
+    if sent_count > 0:
+        try:
+            after = fetch_messages(cfg.chat_id, 20)
+            for m in after:
+                if m.get("is_from_me") and m["id"] not in state["sent_ids"]:
+                    state["sent_ids"].append(m["id"])
+            state["sent_ids"] = state["sent_ids"][-200:]
+        except Exception as e:
+            log(cfg, "WARN", msg=f"전송 후 재조회 실패: {e}")
 
     state["last_processed_id"] = max(newest_id, max(state["sent_ids"], default=newest_id))
     save_state(cfg, state)
