@@ -2,7 +2,7 @@
 
 [kakaocli](https://github.com/silver-flight-group/kakaocli)로 카카오톡 단톡방을 폴링하면서,
 톡방별로 학습한 **내 말투**(`STYLE.md`)로 **적절한 타이밍에만** 자율 응답하는 실험용 봇.
-"언제 말하고 언제 침묵할지"와 "무슨 말투로 답할지"는 Anthropic API(Claude)가 판단한다.
+"언제 말하고 언제 침묵할지"와 "무슨 말투로 답할지"는 OpenRouter를 경유한 Claude가 판단한다.
 
 핵심 설계 철학은 **"대부분의 순간엔 침묵이 정답"** 이다. 봇은 도배하지 않고,
 이름이 불리거나·질문이 오거나·끼어드는 게 자연스러운 순간에만 짧게 반응한다.
@@ -65,7 +65,8 @@
 - **macOS** + [kakaocli](https://github.com/silver-flight-group/kakaocli)
   (시스템 설정에서 **전체 디스크 접근 권한**과 **손쉬운 사용(접근성)** 권한 필요)
 - **Python 3.9+** , `pip install anthropic`
-- **Anthropic API 키** — Claude Pro/Max 구독과는 **별개**의 종량제 키. https://console.anthropic.com 에서 발급
+- **OpenRouter API 키** — 종량제 키. https://openrouter.ai/keys 에서 발급
+  (Anthropic SDK를 OpenRouter의 Anthropic 호환 엔드포인트로 라우팅해 Claude 모델을 호출한다)
 - 데스크톱 카카오톡에 로그인되어 있어야 함 (전송 시 메인 화면 상태)
 
 ---
@@ -86,7 +87,7 @@ python3 update_style.py --target "톡방이름"
 
 # 4) 한 사이클 테스트 (DRY_RUN: 실제 전송 없이 초안만 로그에 남음)
 python3 kakao_bot.py --target "톡방이름"
-#   rooms/<톡방>/bot_log.jsonl 에서 [DRAFT]/[SILENT] 확인
+#   rooms/<톡방>/bot_log.jsonl 에서 [DRAFT]/[SILENT]/[SKIP] 확인
 
 # 5) 충분히 검증되면 지속 가동 + 실제 전송
 python3 kakao_bot.py --target "톡방이름" --no-dry-run --loop
@@ -145,7 +146,8 @@ python3 kakao_bot.py --target "톡방이름" --no-dry-run --use-self --loop
 | `TARGET` / `--target` | 내톡방 | 톡방 이름(부분일치) 또는 chat-id |
 | `DRY_RUN` / `--dry-run`,`--no-dry-run` | true | 초안만 vs 실제 전송 |
 | `USE_SELF` / `--use-self` | false | 읽기는 TARGET, 전송은 '나와의 채팅'으로 |
-| `MODEL` / `--model` | claude-opus-4-8 | 사용 모델 |
+| `MODEL` / `--model` | anthropic/claude-sonnet-5 | 봇 응답 판단 모델 (OpenRouter 슬러그) |
+| `STYLE_MODEL` / `update_style.py --model` | anthropic/claude-opus-4.8 | 말투 갱신 모델 (OpenRouter 슬러그) |
 | `CONTEXT_LIMIT` / `--context-limit` | 40 | LLM에 넘기는 최근 맥락 메시지 수 |
 | `POLL_SECONDS` / `--poll-seconds` | 10 | 루프 폴링 주기(초) |
 | `DELAY_MIN` / `--delay-min` | 3 | 응답 전 랜덤 대기 하한(초) |
@@ -180,7 +182,7 @@ python3 update_style.py --target "톡방이름" --my-messages 200 --pairs 30
 - **사람처럼** — 응답 전 랜덤 대기, 여러 메시지 사이 랜덤 간격
 - **사후 검증** — 전송 전 `[DRAFT]`, 전송 후 `[SENT]` 로그(JSON Lines)
 - **킬 스위치 / 안전 모드** — `STOP` 파일, `DRY_RUN`, `--use-self`
-- **자동 재시도** — Anthropic 일시 과부하(529)·네트워크 오류 시 자동 재시도(`max_retries=4`)
+- **자동 재시도** — API 일시 과부하(429/529)·네트워크 오류 시 자동 재시도(`max_retries=4`)
 
 ---
 
@@ -191,7 +193,7 @@ python3 update_style.py --target "톡방이름" --my-messages 200 --pairs 30
 | `OPENROUTER_API_KEY 가 필요합니다` | `.env`에 키를 넣었는지 확인. VS Code라면 환경변수 주입 설정 영향일 수 있음 — 셸에서 직접 실행해보기 |
 | 전송이 안 되고 `not found in the chat list` | kakaocli가 접근성 트리에서 톡방 이름을 못 찾는 경우. 카카오톡 버전에 따라 이름이 담긴 AX 노드 식별자가 바뀜 → `kakaocli inspect`로 확인 후 kakaocli 소스(`findChatRow`) 점검 |
 | 전송 시 `launching` 상태로 실패 | 카카오톡 앱이 메인(로그인) 화면이어야 함. 재로그인 후 재시도 |
-| `OverloadedError: 529` | Anthropic 서버 일시 과부하. 코드 버그 아님 — 자동 재시도되며 루프 모드는 다음 사이클에 복구 |
+| `OverloadedError: 529` / 5xx | 업스트림(OpenRouter·Claude) 일시 과부하. 코드 버그 아님 — 자동 재시도되며 루프 모드는 다음 사이클에 복구 |
 | 읽기는 되는데 전송만 안 됨 | 전송은 UI 자동화라 **손쉬운 사용(접근성)** 권한 필요. 읽기는 **전체 디스크 접근** 권한 |
 
 ---
@@ -202,7 +204,7 @@ python3 update_style.py --target "톡방이름" --my-messages 200 --pairs 30
 - 실제 단톡방에 **내 이름으로** 메시지가 나갑니다. 상대방을 속이거나 피해를 줄 수 있는 용도로 쓰지 마세요.
 - LLM은 부적절하거나 사실과 다른 말을 생성할 수 있습니다. 실전 전송 전 `DRY_RUN`/`--use-self`로 충분히 검증하세요.
 - `STYLE.md`·`examples.txt`·로그에는 **개인 대화 내용**이 담깁니다. 저장소에 커밋되지 않도록 `.gitignore`가 막고 있으니 임의로 추가하지 마세요.
-- Anthropic API는 **종량제 비용**이 발생합니다.
+- OpenRouter API는 **종량제 비용**이 발생합니다.
 
 ---
 
