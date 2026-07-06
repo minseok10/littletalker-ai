@@ -144,11 +144,11 @@ def main():
     p.add_argument("--pairs", type=int, default=25, help="examples.txt 대화 쌍 수")
     p.add_argument("--fetch-limit", dest="fetch_limit", type=int, default=6000,
                    help="역추적해 읽을 전체 메시지 수")
-    p.add_argument("--model", default=os.environ.get("MODEL", kb.DEFAULTS["MODEL"]))
+    p.add_argument("--model", default=os.environ.get("STYLE_MODEL", kb.DEFAULTS["STYLE_MODEL"]))
     args = p.parse_args()
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("ERROR: ANTHROPIC_API_KEY 가 필요합니다.", file=sys.stderr)
+    if not (os.environ.get("OPENROUTER_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")):
+        print("ERROR: OPENROUTER_API_KEY 또는 ANTHROPIC_API_KEY 가 필요합니다.", file=sys.stderr)
         sys.exit(1)
 
     target = args.target or os.environ.get("TARGET", kb.DEFAULTS["TARGET"])
@@ -175,8 +175,7 @@ def main():
     print(f"분석 대상: 내가 직접 친 메시지 {len(texts)}개 (봇 발화 {len(sent_ids)}개 제외)")
 
     stats = compute_stats(texts)
-    import anthropic
-    client = anthropic.Anthropic()
+    client = kb.make_anthropic_client()
 
     print("STYLE.md 생성 중...")
     style_md = generate_style(client, args.model, stats, texts[-120:])

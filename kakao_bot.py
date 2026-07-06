@@ -36,7 +36,8 @@ GLOBAL_STOP = os.path.join(HERE, "STOP")
 # 내장 기본값
 DEFAULTS = {
     "TARGET": "내톡방",
-    "MODEL": "claude-opus-4-8",
+    "MODEL": "anthropic/claude-sonnet-5",      # 봇 응답 판단 기본 모델(OpenRouter)
+    "STYLE_MODEL": "anthropic/claude-opus-4.8", # 말투 갱신 기본 모델(OpenRouter)
     "DRY_RUN": True,        # 안전 기본값. 실제 전송하려면 false 로.
     "USE_SELF": False,      # true면 전송을 자기채팅으로 (읽기는 TARGET)
     "CONTEXT_LIMIT": 40,    # LLM에 넘기는 최근 맥락 메시지 수
@@ -196,6 +197,19 @@ def read_text_file(path):
         with open(path, encoding="utf-8") as f:
             return f.read()
     return ""
+
+
+def make_anthropic_client(**kwargs):
+    """Anthropic SDK client. OPENROUTER_API_KEY가 있으면 OpenRouter Anthropic API로 라우팅."""
+    import anthropic
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+    if openrouter_key:
+        return anthropic.Anthropic(
+            base_url=os.environ.get("ANTHROPIC_BASE_URL", "https://openrouter.ai/api"),
+            auth_token=openrouter_key,
+            **kwargs,
+        )
+    return anthropic.Anthropic(**kwargs)
 
 
 def build_system_prompt(style, examples):
@@ -436,14 +450,13 @@ def build_arg_parser():
 def main():
     args = build_arg_parser().parse_args()
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("ERROR: ANTHROPIC_API_KEY 가 필요합니다 (.env 또는 환경변수).", file=sys.stderr)
+    if not (os.environ.get("OPENROUTER_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")):
+        print("ERROR: OPENROUTER_API_KEY 또는 ANTHROPIC_API_KEY 가 필요합니다 (.env 또는 환경변수).", file=sys.stderr)
         sys.exit(1)
 
     cfg = Config(args)
 
-    import anthropic
-    client = anthropic.Anthropic(max_retries=4)  # 일시적 과부하(529)·네트워크 오류 자동 재시도
+    client = make_anthropic_client(max_retries=4)  # 일시적 과부하(529)·네트워크 오류 자동 재시도
 
     style = read_text_file(cfg.style_path)
     examples = read_text_file(cfg.examples_path)
