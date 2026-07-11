@@ -27,6 +27,73 @@ from datetime import datetime, timezone
 import kakao_bot as kb  # parse_env_file/.env 로드, kakaocli, resolve_chat, fetch_messages 재사용
 
 
+def infer_name(msgs):
+    """is_from_me 메시지의 sender 최빈값 = 내 카톡 표시 이름. 없으면 ''."""
+    names = Counter(m.get("sender") for m in msgs
+                    if m.get("is_from_me") and m.get("sender"))
+    return names.most_common(1)[0][0] if names else ""
+
+
+def infer_name_for_target(target, fetch_limit=400):
+    """톡방 이름/ID로 메시지를 조금 읽어 내 표시이름을 추론한다(메뉴 미리보기용)."""
+    chat_id, _ = kb.resolve_chat(target)
+    return infer_name(kb.fetch_messages(chat_id, fetch_limit))
+
+
+IDENTITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "names": {"type": "array", "items": {"type": "string"}},
+        "primary_name": {"type": "string"},
+        "profile": {"type": "string"},
+    },
+    "required": ["names", "primary_name", "profile"],
+    "additionalProperties": False,
+}
+
+
+def build_transcript(all_msgs, max_msgs=300, max_len=120):
+    """이름/별명·프로필 추출용 다자 대화 발췌(라벨 포함). 내 메시지는 '(이 사람)' 표시."""
+    rows = [m for m in all_msgs if m.get("text")][-max_msgs:]
+    lines = []
+    for m in rows:
+        who = m.get("sender") or "?"
+        tag = f"{who} (이 사람)" if m.get("is_from_me") else who
+        t = " ".join(m["text"].split())
+        if len(t) > max_len:
+            t = t[:max_len] + "…"
+        lines.append(f"[{tag}] {t}")
+    return "\n".join(lines)
+
+
+def extract_identity(client, model, all_msgs, display_name):
+    """Opus로 대화에서 이 사람의 이름·별명(복수)과 프로필을 추출한다(톡방별로 다름)."""
+    transcript = build_transcript(all_msgs)
+    prompt = f"""너는 카톡 단톡방 대화 로그를 분석한다.
+분석 대상은 표시이름이 "{display_name or '(알 수 없음)'}"인 사람이고, 로그에서 이름 뒤에 "(이 사람)"으로 표시된다.
+아래 두 가지를 뽑아라.
+
+1) names: 이 사람이 '이 톡방에서' 불리는 모든 이름·별명(호칭). 남들이 부를 때 쓰는 반말 별명·줄임말,
+   본인이 자기를 지칭하는 표현, 표시이름과 그 변형을 포함한다. 이 사람을 가리키는 게 확실한 것만 넣어라
+   (다른 사람 호칭과 혼동 금지). 흔한 단어라 오탐이 날 만한 별명은 넣지 마라.
+2) profile: 이 사람이 이 톡방에서 대화하는 데 도움이 될 프로필 — 역할, 주요 관계(누구와 친한지 등),
+   자주 나오는 화제, 대화 태도 등을 관찰 가능한 사실 위주로 한국어 3~8줄.
+
+primary_name 은 대표로 쓸 이름(보통 표시이름).
+
+[대화 로그]
+{transcript}
+"""
+    resp = client.messages.create(
+        model=model,
+        max_tokens=1500,
+        messages=[{"role": "user", "content": prompt}],
+        output_config={"format": {"type": "json_schema", "schema": IDENTITY_SCHEMA}},
+    )
+    text = next((b.text for b in resp.content if b.type == "text"), "")
+    return json.loads(text)
+
+
 def gather_my_messages(chat_id, sent_ids, fetch_limit):
     """톡방에서 내가 직접 친 텍스트 메시지(봇 발화 제외)와, 전체 타임라인을 반환."""
     msgs = kb.fetch_messages(chat_id, fetch_limit)
@@ -145,6 +212,8 @@ def main():
     p.add_argument("--fetch-limit", dest="fetch_limit", type=int, default=6000,
                    help="역추적해 읽을 전체 메시지 수")
     p.add_argument("--model", default=os.environ.get("STYLE_MODEL", kb.DEFAULTS["STYLE_MODEL"]))
+    p.add_argument("--name", default=None,
+                   help="봇이 흉내낼 사람 이름. 생략하면 메시지에서 자동 추론")
     args = p.parse_args()
 
     if not os.environ.get("OPENROUTER_API_KEY"):
@@ -177,8 +246,38 @@ def main():
     stats = compute_stats(texts)
     client = kb.make_anthropic_client()
 
+    # 이름·별명·프로필을 대화에서 추출(Opus). 톡방마다 호칭이 다르므로 톡방별로 저장한다.
+    display_name = infer_name(all_msgs)  # sender 기반 표시이름(힌트·폴백)
+    try:
+        identity = extract_identity(client, args.model, all_msgs, display_name)
+    except Exception as e:
+        print(f"이름·프로필 LLM 추출 실패({e}) — 표시이름만 사용.", file=sys.stderr)
+        identity = {"names": [display_name] if display_name else [],
+                    "primary_name": display_name, "profile": ""}
+    names = [n.strip() for n in identity.get("names", []) if n and n.strip()]
+    primary = (args.name or identity.get("primary_name") or display_name or "").strip()
+    if primary and primary not in names:
+        names.insert(0, primary)
+    names = list(dict.fromkeys(names))  # 중복 제거(순서 유지)
+    profile = (identity.get("profile") or "").strip()
+
+    cfgpath = os.path.join(room_dir, "config.env")
+    if primary:
+        kb.update_config_value(cfgpath, "BOT_NAME", primary)
+    if names:
+        kb.update_config_value(cfgpath, "BOT_ALIASES", ", ".join(names))
+    print("봇 이름: " + (primary or "(미설정)")
+          + (f" · 이름/별명: {', '.join(names)}" if names else "")
+          + (" (직접 지정)" if args.name else " (대화에서 자동 추출)"))
+
     print("STYLE.md 생성 중...")
-    style_md = generate_style(client, args.model, stats, texts[-120:])
+    style_body = generate_style(client, args.model, stats, texts[-120:])
+    profile_section = "## 프로필 · 호칭 (자동 추출)\n\n"
+    if names:
+        profile_section += f"- 이 톡방에서 불리는 이름/별명: {', '.join(names)}\n"
+    if profile:
+        profile_section += f"\n{profile}\n"
+    style_md = profile_section + "\n---\n\n" + style_body
     with open(style_path, "w", encoding="utf-8") as f:
         f.write(style_md + "\n")
     print(f"  → {style_path}")

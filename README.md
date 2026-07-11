@@ -79,8 +79,8 @@ pip install anthropic
 
 # 2) 환경 설정
 cp .env.example .env
-#   .env 를 열어 OPENROUTER_API_KEY 와 TARGET(톡방 이름) 입력
-#   처음엔 DRY_RUN=true 로 두세요 (실제 전송 안 함)
+#   .env 를 열어 OPENROUTER_API_KEY 만 채우면 됩니다 (다른 설정은 불필요)
+#   전송은 기본이 dry-run(초안만) 이라 처음부터 안전합니다
 
 # 3) 말투 프로파일 생성 — 그 톡방에서 내가 친 메시지로 STYLE.md/examples.txt 자동 생성
 python3 update_style.py --target "톡방이름"
@@ -100,7 +100,7 @@ python3 kakao_bot.py --target "톡방이름" --no-dry-run --loop
 ```
 kakao_bot.py          봇 본체
 update_style.py       말투(STYLE.md) 갱신 스크립트
-.env                  전역 설정(API 키 등) — git 제외
+.env                  OpenRouter API 키(시크릿) — git 제외
 .env.example          .env 템플릿
 rooms/
   <톡방이름>/
@@ -117,6 +117,38 @@ rooms/
 ---
 
 ## 🕹️ 사용
+
+### 대화형 메뉴 (`menu.py`) — 권장
+
+숫자만 입력해 톡방을 고르고 봇을 다룰 수 있는 대화형 진입점이다. 인수를 외울 필요 없이
+`kakao_bot.py`/`update_style.py`를 대신 실행해 준다.
+
+```bash
+.venv/bin/python menu.py
+```
+
+```
+  1) 봇 실행          톡방 목록에서 번호로 고름 → (말투 없으면 먼저 학습) →
+                     응답 적극성 확인/변경 → 실제 전송 여부 확인 → 한 사이클/루프 선택
+  2) 말투 학습        톡방 선택 → (대표 이름 지정/자동) → 대화에서 이름·별명·프로필·말투 학습 → STYLE.md 갱신
+  3) 톡방 목록 보기    카톡 톡방 + 학습·적극성 상태
+  4) 톡방별 설정       응답 적극성 · 봇 이름/별명 · 학습 파라미터 등 config.env 확인/변경
+  0) 종료
+```
+
+- **말투 미학습 방**은 봇 실행 전에 학습을 먼저 유도한다.
+- **이름·별명·프로필**은 말투 학습 과정에서 그 톡방 대화를 Opus로 분석해 자동 추출한다. 단톡방마다
+  부르는 호칭(이름·별명)이 다르므로 톡방별로 저장된다 — 대표 이름은 `BOT_NAME`, 이 방에서 쓰이는
+  이름/별명 목록은 `BOT_ALIASES`(봇이 "내가 불렸는지" 판단에 사용), 관계·화제 등 프로필은 `STYLE.md`의
+  "프로필·호칭" 섹션에 담긴다. 학습 시 대표 이름을 직접 지정할 수 있고, 비우면 특정인 없이 "이 계정 주인"
+  이라는 일반 문구로 동작한다(배포 기본값 — 커밋되는 코드/프롬프트에 개인정보 없음).
+- **응답 적극성(1~5)** 은 얼마나 적극적으로 끼어들지를 조절하며, 고를 때 레벨별 반응을
+  같은 예시 대화로 보여준다. 값은 `rooms/<톡방>/config.env`의 `ASSERTIVENESS`에 저장된다.
+- 실제 전송은 실행 직전 매번 확인하며, 확인을 통과하지 못하면 자동으로 dry-run으로 진행한다.
+- **학습 파라미터**(`--my-messages`·`--pairs`·`--fetch-limit`·`--model`)는 학습 시 조정할 수 있고,
+  `rooms/<톡방>/config.env`(`MY_MESSAGES`·`PAIRS`·`STYLE_FETCH_LIMIT`·`STYLE_MODEL`)에 저장돼 톡방별로 유지된다.
+
+### 직접 실행 (`kakao_bot.py`)
 
 ```bash
 # 한 사이클(테스트)
@@ -141,6 +173,10 @@ python3 kakao_bot.py --target "톡방이름" --no-dry-run --use-self --loop
 
 우선순위: **명령줄 인수 > 환경변수/`.env` > 톡방별 `config.env` > 내장 기본값**
 
+> `.env` 에는 `OPENROUTER_API_KEY` 만 두는 것을 권장한다. 아래 설정들은 미리 정의해두지 않아도 되고,
+> 넣지 않으면 표의 기본값이 쓰인다. 톡방별로 바꾸려면 `rooms/<톡방>/config.env`(대화형 메뉴에서 관리)에,
+> 일회성으로는 CLI 인수로 주면 된다. (`.env` 에 전역으로 넣으면 `config.env`보다 우선하니 주의)
+
 | 키 / 인수 | 기본값 | 설명 |
 |---|---|---|
 | `TARGET` / `--target` | 내톡방 | 톡방 이름(부분일치) 또는 chat-id |
@@ -155,6 +191,9 @@ python3 kakao_bot.py --target "톡방이름" --no-dry-run --use-self --loop
 | `MIN_GAP` / `--min-gap` | 5 | 내 마지막 발화 후 최소 간격(초) |
 | `MAX_PER_HOUR` / `--max-per-hour` | 0 | 시간당 최대 발화(0=무제한) |
 | `FETCH_LIMIT` / `--fetch-limit` | 80 | 한 번에 읽는 메시지 수 |
+| `ASSERTIVENESS` / `--assertiveness` | 3 | 응답 적극성 1(거의 침묵)~5(매우 적극적) |
+| `BOT_NAME` / `--name` | (학습 시 자동 추출) | 봇이 흉내낼 사람 대표 이름. 비우면 "이 계정 주인"으로 동작 |
+| `BOT_ALIASES` | (학습 시 자동 추출) | 이 톡방에서 나를 부르는 이름/별명(쉼표 구분). "내가 불렸는지" 판단에 사용 |
 
 톡방마다 다른 값을 주고 싶으면 `rooms/<톡방>/config.env`에 같은 키를 쓰면 된다.
 
@@ -162,12 +201,19 @@ python3 kakao_bot.py --target "톡방이름" --no-dry-run --use-self --loop
 
 ## 🗣️ 말투 갱신 (`update_style.py`)
 
-봇이 보낸 메시지는 빼고, **내가 직접 친 메시지만**으로 그 톡방의 `STYLE.md`·`examples.txt`를 다시 생성한다.
-(봇 발화는 `state.json`의 `sent_ids`로 구분.) 자주 할 필요는 없고 가끔(예: 주 1회) 돌리면 된다.
+그 톡방에서 대화하는 데 필요한 걸 학습해 `STYLE.md`·`examples.txt`를 다시 생성한다:
+
+- **말투** — 봇이 보낸 메시지는 빼고 **내가 직접 친 메시지만**으로 분석(봇 발화는 `state.json`의 `sent_ids`로 구분).
+- **이름·별명·프로필** — Opus가 그 톡방 대화를 분석해 내가 불리는 이름/별명(단톡방마다 다름)과
+  관계·화제 등 프로필을 추출한다. 이름/별명은 `config.env`(`BOT_NAME`·`BOT_ALIASES`)에, 프로필은
+  `STYLE.md`의 "프로필·호칭" 섹션에 저장돼 응답 적합성을 높인다.
+
+자주 할 필요는 없고 가끔(예: 주 1회) 돌리면 된다.
 
 ```bash
 python3 update_style.py --target "톡방이름"
 python3 update_style.py --target "톡방이름" --my-messages 200 --pairs 30
+python3 update_style.py --target "톡방이름" --name "홍길동"   # 대표 이름 직접 지정(별명은 여전히 자동 추출)
 ```
 
 처음 쓰는 톡방은 이 스크립트로 `STYLE.md`를 먼저 만들어 두면 된다.
