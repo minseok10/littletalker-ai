@@ -544,6 +544,8 @@ def build_arg_parser():
                    help="실제 전송함")
     p.add_argument("--use-self", dest="use_self", action="store_true", default=None,
                    help="전송을 자기채팅으로(읽기는 TARGET)")
+    p.add_argument("--no-use-self", dest="use_self", action="store_false",
+                   help="전송을 TARGET 톡방으로")
     p.add_argument("--loop", action="store_true", help="지속 가동(폴링 루프)")
     return p
 

@@ -290,19 +290,27 @@ def do_run():
     if ask("적극성을 변경할까요? (예시 보기) (y/N): ").lower() in ("y", "yes"):
         lv = choose_assertiveness(target)
 
-    # 3) 실제 전송 여부 — 실행 직전 매번 확인
-    print("\n실제로 카톡에 메시지를 전송할까요?")
-    print("  N = dry-run (전송 안 함, 초안만 로그에 남김)")
-    print("  y = 실제 전송 (내 이름으로 톡방에 메시지가 나갑니다)")
-    send = ask("실제 전송? (y/N): ").lower() in ("y", "yes")
-    if send:
-        confirm = ask("정말 실제 전송합니다. 진행하려면 'yes'를 입력: ").strip().lower()
-        if confirm != "yes":
-            print("→ dry-run 으로 진행합니다.")
-            send = False
+    # 3) 전송 대상 — 기본은 나와의 채팅, 실제 톡방만 이중 확인
+    print("\n전송 방식을 선택하세요:")
+    print("  1 = 나와의 채팅으로 전송 (기본·테스트용)")
+    print("  2 = 선택한 실제 톡방에 전송")
+    print("  3 = dry-run (전송 안 함, 초안만 로그)")
+    delivery = ask("선택 (1/2/3, 기본 1): ")
+    if delivery == "2":
+        confirm = ask("실제 톡방에 전송합니다. 진행하려면 'yes'를 입력: ").strip().lower()
+        if confirm == "yes":
+            delivery_args = ["--no-dry-run", "--no-use-self"]
+        else:
+            print("→ 나와의 채팅으로 전송합니다.")
+            delivery_args = ["--no-dry-run", "--use-self"]
+    elif delivery == "3":
+        delivery_args = ["--dry-run", "--no-use-self"]
+    else:
+        if delivery not in ("", "1"):
+            print("잘못된 입력 — 나와의 채팅으로 전송합니다.")
+        delivery_args = ["--no-dry-run", "--use-self"]
 
-    args = ["--target", target, "--assertiveness", str(lv),
-            "--no-dry-run" if send else "--dry-run"]
+    args = ["--target", target, "--assertiveness", str(lv)] + delivery_args
 
     # 4) 실행 방식 — 실행할 때마다 선택
     print("\n실행 방식:")

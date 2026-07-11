@@ -93,7 +93,7 @@ cp .env.example .env
 ```
 
 > 처음엔 반드시 **dry-run**(초안만 로그) 또는 **`--use-self`**(나와의 채팅으로만 전송)로 충분히
-> 검증하세요. 메뉴의 "봇 실행"은 실제 전송 여부를 매번 물어보고, 확인을 통과하지 못하면 dry-run으로 진행합니다.
+> 검증하세요. 메뉴의 "봇 실행"은 기본적으로 나와의 채팅에 전송하며, 실제 톡방 전송은 `yes`로 한 번 더 확인합니다.
 > 스크립트를 직접 실행하고 싶으면 아래 **사용** 섹션을 참고하세요.
 
 ---
@@ -133,7 +133,7 @@ rooms/
 
 ```
   1) 봇 실행          톡방 목록에서 번호로 고름 → (말투 없으면 먼저 학습) →
-                     응답 적극성 확인/변경 → 실제 전송 여부 확인 → 한 사이클/루프 선택
+                     응답 적극성 확인/변경 → 전송 대상 선택 → 한 사이클/루프 선택
   2) 말투 학습        톡방 선택 → (대표 이름 지정/자동) → 대화에서 이름·별명·프로필·말투 학습 → STYLE.md 갱신
   3) 톡방 목록 보기    카톡 톡방 + 학습·적극성 상태
   4) 톡방별 설정       응답 적극성 · 봇 이름/별명 · 학습 파라미터 등 config.env 확인/변경
@@ -148,7 +148,8 @@ rooms/
   이라는 일반 문구로 동작한다(배포 기본값 — 커밋되는 코드/프롬프트에 개인정보 없음).
 - **응답 적극성(1~5)** 은 얼마나 적극적으로 끼어들지를 조절하며, 고를 때 레벨별 반응을
   같은 예시 대화로 보여준다. 값은 `rooms/<톡방>/config.env`의 `ASSERTIVENESS`에 저장된다.
-- 실제 전송은 실행 직전 매번 확인하며, 확인을 통과하지 못하면 자동으로 dry-run으로 진행한다.
+- 전송 대상은 **나와의 채팅(기본)**·실제 톡방·dry-run 중에서 고른다. 실제 톡방 전송은 `yes`로
+  한 번 더 확인하며, 확인하지 않으면 나와의 채팅으로 전환된다.
 - **학습 파라미터**(`--my-messages`·`--pairs`·`--fetch-limit`·`--model`)는 학습 시 조정할 수 있고,
   `rooms/<톡방>/config.env`(`MY_MESSAGES`·`PAIRS`·`STYLE_FETCH_LIMIT`·`STYLE_MODEL`)에 저장돼 톡방별로 유지된다.
 
@@ -185,7 +186,7 @@ rooms/
 |---|---|---|
 | `TARGET` / `--target` | 내톡방 | 톡방 이름(부분일치) 또는 chat-id |
 | `DRY_RUN` / `--dry-run`,`--no-dry-run` | true | 초안만 vs 실제 전송 |
-| `USE_SELF` / `--use-self` | false | 읽기는 TARGET, 전송은 '나와의 채팅'으로 |
+| `USE_SELF` / `--use-self`,`--no-use-self` | false | 읽기는 TARGET, 전송은 '나와의 채팅' 또는 TARGET으로 |
 | `MODEL` / `--model` | anthropic/claude-sonnet-5 | 봇 응답 판단 모델 (OpenRouter 슬러그) |
 | `STYLE_MODEL` / `update_style.py --model` | anthropic/claude-opus-4.8 | 말투 갱신 모델 (OpenRouter 슬러그) |
 | `CONTEXT_LIMIT` / `--context-limit` | 40 | LLM에 넘기는 최근 맥락 메시지 수 |
