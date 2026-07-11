@@ -2,9 +2,8 @@
 """
 말투(STYLE.md) / 예시(examples.txt) 주기적 갱신 스크립트.
 
-핵심: 내가 "직접 친" 메시지만으로 말투를 학습한다.
-  - is_from_me=true 중에서, 봇이 보낸 메시지(rooms/<톡방>/state.json 의 sent_ids)는 제외.
-  - 남은 게 진짜 내 말투 데이터.
+핵심: 전체 대화 흐름에서 이 사람이 언제·얼마나·어떻게 말하는지를 학습한다.
+봇이 보낸 메시지를 학습에 포함할지는 실행 옵션으로 선택할 수 있다.
 
 자주 돌릴 필요는 없다. 가끔(주 1회 등) 돌려서 톡방별 말투를 최신화하면 된다.
 
@@ -25,6 +24,10 @@ from collections import Counter
 from datetime import datetime, timezone
 
 import kakao_bot as kb  # parse_env_file/.env 로드, kakaocli, resolve_chat, fetch_messages 재사용
+
+
+# 이름·별명·프로필 분석은 항상 Opus 4.8로 수행한다.
+PROFILE_ANALYSIS_MODEL = "anthropic/claude-opus-4.8"
 
 
 def infer_name(msgs):
@@ -82,8 +85,8 @@ def build_transcript(all_msgs, max_msgs=300, max_len=120):
     return "\n".join(lines)
 
 
-def extract_identity(client, model, all_msgs, display_name):
-    """Opus로 대화에서 이 사람의 이름·별명(복수)과 프로필을 추출한다(톡방별로 다름)."""
+def extract_identity(client, all_msgs, display_name):
+    """Opus 4.8로 이름·별명·프로필을 추출한다(톡방별로 다름)."""
     transcript = build_transcript(all_msgs)
     prompt = f"""너는 카톡 단톡방 대화 로그를 분석한다.
 분석 대상은 표시이름이 "{display_name or '(알 수 없음)'}"인 사람이고, 로그에서 이름 뒤에 "(이 사람)"으로 표시된다.
@@ -94,14 +97,13 @@ def extract_identity(client, model, all_msgs, display_name):
    (다른 사람 호칭과 혼동 금지). 흔한 단어라 오탐이 날 만한 별명은 넣지 마라.
 2) profile: 이 사람이 이 톡방에서 대화하는 데 도움이 될 프로필 — 역할, 주요 관계(누구와 친한지 등),
    자주 나오는 화제, 대화 태도 등을 관찰 가능한 사실 위주로 한국어 3~8줄.
-
 primary_name 은 대표로 쓸 이름(보통 표시이름).
 
 [대화 로그]
 {transcript}
 """
     resp = client.messages.create(
-        model=model,
+        model=PROFILE_ANALYSIS_MODEL,
         max_tokens=1500,
         messages=[{"role": "user", "content": prompt}],
         output_config={"format": {"type": "json_schema", "schema": IDENTITY_SCHEMA}},
@@ -110,18 +112,21 @@ primary_name 은 대표로 쓸 이름(보통 표시이름).
     return json.loads(text)
 
 
-def gather_my_messages(chat_id, sent_ids, fetch_limit):
-    """톡방에서 내가 직접 친 텍스트 메시지(봇 발화 제외)와, 전체 타임라인을 반환."""
+def gather_training_messages(chat_id, sent_ids, fetch_limit, include_bot_messages=False):
+    """원본·학습용 타임라인과 학습 대상자의 텍스트 메시지를 반환한다."""
     msgs = kb.fetch_messages(chat_id, fetch_limit)
     sent = set(sent_ids)
-    mine = [
+    training_msgs = [
         m for m in msgs
+        if include_bot_messages or not (m.get("is_from_me") and m["id"] in sent)
+    ]
+    mine = [
+        m for m in training_msgs
         if m.get("is_from_me")
-        and m["id"] not in sent
         and m.get("type") in ("text", "unknown")
         and m.get("text")
     ]
-    return msgs, mine
+    return msgs, training_msgs, mine
 
 
 def compute_stats(texts):
@@ -152,8 +157,33 @@ def compute_stats(texts):
     }
 
 
+def compute_participation_stats(messages, mine_ids):
+    """전체 대화에서 대상자의 발화 비율과 연속 전송(버스트) 정도를 계산한다."""
+    mine_set = set(mine_ids)
+    rows = [m for m in messages if m.get("text")]
+    burst_lengths, current = [], 0
+    for m in rows:
+        if m["id"] in mine_set:
+            current += 1
+        elif current:
+            burst_lengths.append(current)
+            current = 0
+    if current:
+        burst_lengths.append(current)
+    mine_count = sum(1 for m in rows if m["id"] in mine_set)
+    return {
+        "timeline_messages": len(rows),
+        "target_messages": mine_count,
+        "target_message_ratio": round(mine_count / len(rows), 3) if rows else 0,
+        "target_bursts": len(burst_lengths),
+        "avg_messages_per_burst": (round(statistics.mean(burst_lengths), 2)
+                                   if burst_lengths else 0),
+        "max_messages_per_burst": max(burst_lengths, default=0),
+    }
+
+
 def build_pairs(all_msgs, mine_ids, max_pairs, window_sec=300):
-    """직전 남의 메시지 → 내(직접 친) 답장 쌍."""
+    """직전 남의 메시지 → 학습 대상자의 답장 쌍."""
     def ts(m):
         return datetime.fromisoformat(m["timestamp"].replace("Z", "+00:00"))
     mine_set = set(mine_ids)
@@ -185,30 +215,43 @@ def build_pairs(all_msgs, mine_ids, max_pairs, window_sec=300):
 STYLE_SCHEMA_HINT = """
 STYLE.md 는 아래 섹션을 갖춘 마크다운으로 작성하라(관찰 가능한 구체적 특징 위주, 추상적 형용사 금지):
 0. 한 줄 요약
-1. 길이 (평균/중앙값/분포)
-2. 끊어 보내기(버스트) 경향
-3. ㅋ/ㅎ/이모지 사용
-4. 문장부호·띄어쓰기 습관
-5. 자주 쓰는 종결 어미
-6. 자주 쓰는 단어·표현
-7. 대화 태도(먼저 말 걸기 vs 리액션, 받아치기 등)
-8. 봇이 지켜야 할 출력 규칙(번호 목록)
+1. 발화 판단 — 어떤 상황에 끼어들고, 어떤 상황에는 침묵하는지
+2. 발화 빈도와 주도성 — 먼저 말 걸기, 질문 반응, 잡담 개입, 화제 시작·전환 경향
+3. 상황별 반응 — 이름 언급, 직접 질문, 단체 질문, 가벼운 잡담, 장난, 진지한 대화별 차이
+4. 대화 리듬과 티키타카 — 받아치기 지속 정도, 한 번 끼면 몇 턴 이어가는지, 빠지는 시점
+5. 메시지 길이와 끊어 보내기 — 평균/중앙값/분포, 연속 전송(버스트) 개수와 패턴
+6. ㅋ/ㅎ/이모지·문장부호·띄어쓰기 습관
+7. 자주 쓰는 종결 어미·단어·표현
+8. 봇이 지켜야 할 행동·출력 규칙 — 응답 여부부터 메시지 개수·길이·말투까지 번호 목록
 """.strip()
 
 
-def generate_style(client, model, stats, sample_texts):
+def generate_style(client, model, stats, participation_stats, sample_texts, transcript):
     sample = "\n".join(f"- {t}" for t in sample_texts)
     stats_json = json.dumps(stats, ensure_ascii=False, indent=2)
-    prompt = f"""다음은 한 사람이 카톡 단톡방에서 "직접 친" 메시지들의 통계와 표본이다.
-이 사람의 말투를 관찰 가능한 구체적 특징으로 분석해 STYLE.md 를 작성하라.
+    participation_json = json.dumps(participation_stats, ensure_ascii=False, indent=2)
+    prompt = f"""다음은 한 사람의 카톡 단톡방 메시지 통계와 전체 대화 흐름이다.
+로그에서 분석 대상은 이름 뒤에 "(이 사람)"으로 표시된다.
+문체만 요약하지 말고, 이 사람이 언제 말하고 언제 침묵하는지, 얼마나 자주 먼저 말을 거는지,
+상황별 개입 방식, 티키타카 지속 정도, 메시지 길이와 끊어 보내기까지 행동 패턴 전체를 분석해
+자동응답 봇이 그대로 재현할 수 있는 STYLE.md를 작성하라.
+
+고정된 적극성 단계나 일반적인 카톡 화자상을 가정하지 말고 오직 제공된 관찰 자료에 근거하라.
+응답 여부를 판단할 수 있도록 상황별로 "말하는 경우"와 "침묵하는 경우"를 구체적으로 구분하라.
 
 {STYLE_SCHEMA_HINT}
 
-[통계]
+[대상자 메시지 문체 통계]
 {stats_json}
 
-[메시지 표본]
+[전체 대화 참여 통계]
+{participation_json}
+
+[대상자 메시지 표본]
 {sample}
+
+[최근 전체 대화 흐름]
+{transcript}
 
 STYLE.md 본문만 출력하라(코드펜스 없이)."""
     resp = client.messages.create(
@@ -230,6 +273,12 @@ def main():
     p.add_argument("--model", default=os.environ.get("STYLE_MODEL", kb.DEFAULTS["STYLE_MODEL"]))
     p.add_argument("--name", default=None,
                    help="봇이 흉내낼 사람 이름. 생략하면 메시지에서 자동 추론")
+    bot_group = p.add_mutually_exclusive_group()
+    bot_group.add_argument("--include-bot-messages", dest="include_bot_messages",
+                           action="store_true", help="기존 봇 발화도 말투·행동 학습에 포함")
+    bot_group.add_argument("--exclude-bot-messages", dest="include_bot_messages",
+                           action="store_false", help="기존 봇 발화를 학습에서 제외(기본)")
+    p.set_defaults(include_bot_messages=False)
     args = p.parse_args()
 
     if not os.environ.get("OPENROUTER_API_KEY"):
@@ -249,26 +298,33 @@ def main():
             sent_ids = json.load(f).get("sent_ids", [])
 
     chat_id, _ = kb.resolve_chat(target)
-    all_msgs, mine = gather_my_messages(chat_id, sent_ids, args.fetch_limit)
+    _all_msgs, training_msgs, mine = gather_training_messages(
+        chat_id, sent_ids, args.fetch_limit, args.include_bot_messages)
     if not mine:
-        print(f"내가 직접 친 메시지를 찾지 못함 (target={target}).", file=sys.stderr)
+        print(f"학습 대상자의 메시지를 찾지 못함 (target={target}).", file=sys.stderr)
         sys.exit(1)
 
-    mine = mine[-args.my_messages:]
-    mine_ids = [m["id"] for m in mine]
-    texts = [m["text"] for m in mine]
-    print(f"분석 대상: 내가 직접 친 메시지 {len(texts)}개 (봇 발화 {len(sent_ids)}개 제외)")
+    all_mine_ids = [m["id"] for m in mine]
+    sample_mine = mine[-args.my_messages:]
+    sample_mine_ids = [m["id"] for m in sample_mine]
+    texts = [m["text"] for m in sample_mine]
+    mode = "포함" if args.include_bot_messages else "제외"
+    print(f"분석 대상 메시지 {len(texts)}개 · 봇 발화 {mode} "
+          f"(기록된 봇 발화 {len(sent_ids)}개)")
 
     stats = compute_stats(texts)
+    participation_stats = compute_participation_stats(training_msgs, all_mine_ids)
+    behavior_transcript = build_transcript(training_msgs)
     client = kb.make_anthropic_client()
 
     # ── API 호출을 먼저 모두 끝낸다 ──────────────────────────────────
     # (이름 저장 후 STYLE 생성이 실패하면 '새 이름 + 옛 STYLE'로 정보가 섞이므로,
     #  모든 LLM 결과를 확보한 뒤에만 파일을 기록한다.)
-    # 이름·별명·프로필을 대화에서 추출(Opus). 톡방마다 호칭이 다르므로 톡방별로 저장한다.
-    display_name = infer_name(all_msgs)  # sender 기반 표시이름(힌트·폴백)
+    # 이름·별명·프로필을 Opus 4.8로 추출한다. 톡방마다 다르므로 톡방별로 저장한다.
+    display_name = infer_name(training_msgs)  # sender 기반 표시이름(힌트·폴백)
+    print(f"이름·별명·프로필 분석 중 ({PROFILE_ANALYSIS_MODEL})...")
     try:
-        identity = extract_identity(client, args.model, all_msgs, display_name)
+        identity = extract_identity(client, training_msgs, display_name)
     except Exception as e:
         print(f"이름·프로필 LLM 추출 실패({e}) — 표시이름만 사용.", file=sys.stderr)
         identity = {"names": [display_name] if display_name else [],
@@ -280,14 +336,14 @@ def main():
         names.insert(0, primary)
     names = names[:12]
     profile = (identity.get("profile") or "").strip()[:2000]
-
     print("STYLE.md 생성 중...")
     try:
-        style_body = generate_style(client, args.model, stats, texts[-120:])
+        style_body = generate_style(client, args.model, stats, participation_stats,
+                                    texts[-120:], behavior_transcript)
     except Exception as e:
         print(f"STYLE.md 생성 실패: {e} — 아무것도 변경하지 않았습니다.", file=sys.stderr)
         sys.exit(1)
-    pairs = build_pairs(all_msgs, mine_ids, args.pairs)  # API 호출 아님
+    pairs = build_pairs(training_msgs, sample_mine_ids, args.pairs)  # API 호출 아님
 
     # ── 여기부터 파일 기록 (모든 API 결과 확보 후, 원자적 교체) ──────────
     profile_section = "## 프로필 · 호칭 (자동 추출)\n\n"
@@ -301,7 +357,8 @@ def main():
 
     lines = [
         '# examples.txt — "직전 메시지 → 내 답장" 대화 쌍',
-        "# (update_style.py 자동 생성. 봇 발화 제외, 내가 직접 친 답장만)",
+        ("# (update_style.py 자동 생성. 봇 발화 "
+         + ("포함" if args.include_bot_messages else "제외") + ")"),
         "",
     ]
     for sender, prev, reply in pairs:
@@ -313,6 +370,8 @@ def main():
 
     # 이름·별명은 STYLE 저장이 끝난 뒤 마지막에 기록(불일치 창 최소화, 키 주입 방어)
     cfgpath = os.path.join(room_dir, "config.env")
+    # 숫자 적극성 체계는 폐기되었으므로 이전 버전의 잔여 설정을 정리한다.
+    kb.remove_config_keys(cfgpath, {"ASSERTIVENESS", "DETECTED_ASSERTIVENESS"})
     if primary:
         kb.update_config_value(cfgpath, "BOT_NAME", primary)
     if names:

@@ -33,6 +33,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOMS_DIR = os.path.join(HERE, "rooms")
 GLOBAL_ENV = os.path.join(HERE, ".env")
 GLOBAL_STOP = os.path.join(HERE, "STOP")
+SENT_ID_HISTORY_LIMIT = 10000  # 말투 재학습 때 과거 봇 발화를 포함/제외하기 위한 이력
 
 # 내장 기본값
 DEFAULTS = {
@@ -45,28 +46,11 @@ DEFAULTS = {
     "POLL_SECONDS": 10,     # 루프 폴링 주기(초)
     "DELAY_MIN": 3,         # 응답 전 랜덤 대기 하한(초)
     "DELAY_MAX": 9,         # 상한
-    "MIN_GAP": 5,           # 내 마지막 발화 후 최소 경과(초)
+    "MIN_GAP": 0,           # 선택적 안전 간격(0=STYLE.md의 대화 리듬을 제한하지 않음)
     "MAX_PER_HOUR": 0,      # 시간당 최대 발화 수 (0=무제한)
     "FETCH_LIMIT": 80,      # 한 번에 읽어올 메시지 수
-    "ASSERTIVENESS": 3,     # 응답 적극성 1(거의 침묵)~5(매우 적극적)
     "BOT_NAME": "",         # 봇이 흉내낼 사람 대표 이름(비우면 일반 문구; 보통 학습 시 자동 설정)
     "BOT_ALIASES": "",      # 이 톡방에서 나를 부르는 이름/별명들(쉼표 구분; 학습 시 자동 추출)
-}
-
-
-# 응답 적극성 레벨별 지침. 값이 클수록 더 적극적으로 대화에 끼어든다.
-ASSERTIVENESS_DIRECTIVES = {
-    1: "거의 항상 침묵한다. 오직 내 이름/별명이 직접 불리거나 나에게 대놓고 던진 질문일 때만, "
-       "그것도 짧게 한 번만 답한다. 그 외 모든 상황은 should_respond=false.",
-    2: "기본은 침묵이다. 내 이름이 언급되거나 내가 답하기 딱 좋은 명확한 질문일 때만 응답한다. "
-       "가벼운 잡담·리액션에는 끼지 않는다.",
-    3: "이름 언급, 내가 답할 만한 질문, 흐름상 자연스러운 가벼운 리액션에 응답한다. "
-       "애매하면 침묵한다. (기본 균형)",
-    4: "대화에 곧잘 끼어든다. 이름이 안 불려도 관심 있는 주제나 반응할 만한 흐름이면 "
-       "짧게 리액션하고 티키타카로 이어간다. 단, 아무도 반응 안 하는데 혼자 도배하지는 않는다.",
-    5: "대화에 활발히 참여한다. 웬만한 흐름에 리액션하고, 먼저 말을 걸거나 화제를 이어가기도 한다. "
-       "여러 개의 짧은 메시지로 티키타카를 즐긴다. 그래도 완전히 무관한 얘기나 남들이 이미 끝낸 "
-       "화제에 뒤늦게 도배하지는 않는다.",
 }
 
 
@@ -129,9 +113,6 @@ class Config:
         self.min_gap = resolve("MIN_GAP", "min_gap", int)
         self.max_per_hour = resolve("MAX_PER_HOUR", "max_per_hour", int)
         self.fetch_limit = resolve("FETCH_LIMIT", "fetch_limit", int)
-        self.assertiveness = resolve("ASSERTIVENESS", "assertiveness", int)
-        if self.assertiveness not in ASSERTIVENESS_DIRECTIVES:  # 범위 밖 값은 기본값으로 폴백
-            self.assertiveness = DEFAULTS["ASSERTIVENESS"]
         self.bot_name = resolve("BOT_NAME", "name", str)
         self.bot_aliases = resolve("BOT_ALIASES", "aliases", str)
 
@@ -268,6 +249,23 @@ def update_config_value(path, key, value):
     write_text_atomic(path, "".join(lines))
 
 
+def remove_config_keys(path, keys):
+    """config.env에서 지정한 키를 제거하고 다른 내용은 보존한다."""
+    if not os.path.exists(path):
+        return
+    keys = set(keys)
+    lines = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            s = line.strip()
+            if s and not s.startswith("#") and "=" in s:
+                key = s.split("=", 1)[0].strip()
+                if key in keys:
+                    continue
+            lines.append(line if line.endswith("\n") else line + "\n")
+    write_text_atomic(path, "".join(lines))
+
+
 def make_anthropic_client(**kwargs):
     """Anthropic SDK를 OpenRouter Anthropic API로 라우팅한다. OpenRouter 전용."""
     import anthropic
@@ -278,10 +276,7 @@ def make_anthropic_client(**kwargs):
     )
 
 
-def build_system_prompt(style, examples, assertiveness=DEFAULTS["ASSERTIVENESS"],
-                        name="", aliases=""):
-    directive = ASSERTIVENESS_DIRECTIVES.get(
-        assertiveness, ASSERTIVENESS_DIRECTIVES[DEFAULTS["ASSERTIVENESS"]])
+def build_system_prompt(style, examples, name="", aliases=""):
     alias_list = [a.strip() for a in aliases.split(",") if a.strip()]
     if not alias_list and name:
         alias_list = [name]
@@ -290,27 +285,16 @@ def build_system_prompt(style, examples, assertiveness=DEFAULTS["ASSERTIVENESS"]
                  if alias_list else "내 이름/별명이 언급됨")
     return f"""너는 카톡 단톡방에서 {persona}의 말투로 대신 답하는 봇이다.
 아래 STYLE.md는 {persona}의 관찰된 말투 규칙이고, examples.txt는 실제 대화 예시다.
-이 톤을 그대로 흉내 내되, 자연스럽고 사람처럼 행동하라.
+이 사람의 말투뿐 아니라 언제 말하고 언제 침묵하는지, 얼마나 자주 끼어드는지,
+몇 개로 끊어 보내는지까지 아래 STYLE.md에 기록된 행동 패턴을 그대로 재현하라.
 
-[가장 중요한 규칙]
-- 대부분의 순간에는 "응답하지 않는다"가 정답이다. 침묵을 적극적인 선택지로 삼아라.
-- 다음 중 하나일 때만 응답을 고려한다:
-  (1) {name_rule}
-  (2) 단톡방에 던져진 질문에 내가 답할 만함
-  (3) 흐름상 가벼운 리액션이 자연스럽고, 끼어드는 게 어색하지 않은 순간
-- 평소엔 말수가 적지만, 일단 대화에 끼면 티키타카로 짧게 여러 번 주고받는 게 자연스럽다.
-  내가 방금 말했더라도 상대가 받아치거나 대화가 이어지는 중이면 계속 말해도 된다.
-- 단, 아무도 반응 안 하는데 혼자 연달아 떠드는 독백/도배는 하지 않는다.
-- 애매하면 침묵한다.
-
-[응답 적극성 레벨: {assertiveness}/5]
-- {directive}
-- 이 적극성 지침은 위 '[가장 중요한 규칙]'의 침묵 기본값보다 우선한다.
-
-[응답할 때의 말투]
-- 말투·어미·이모지·문장부호 습관은 아래 STYLE.md 와 examples.txt 에서 관찰된 규칙을 그대로 따른다.
-  (특정 말투를 여기서 임의로 강요하지 말 것 — 사람마다 다르다.)
-- 한 호흡 넘는 내용이면 짧은 메시지 2~3개로 쪼갠다.
+[행동 판단의 유일한 기준]
+- 응답 여부, 발화 빈도, 먼저 말 거는 정도, 질문·이름 언급·잡담에 반응하는 방식,
+  티키타카 지속 정도, 메시지 길이와 끊어 보내기는 모두 STYLE.md를 따른다.
+- 보편적인 "적극적/소극적" 기본값을 임의로 적용하지 않는다.
+- STYLE.md상 이 사람이 해당 상황에서 침묵할 가능성이 높으면 should_respond=false로 판단한다.
+- 응답한다면 말투·어미·이모지·문장부호·메시지 개수도 STYLE.md와 examples.txt를 따른다.
+- 이름/별명 참고: {name_rule}
 
 --- STYLE.md ---
 {style}
@@ -515,7 +499,7 @@ def run_cycle(client, cfg, system_prompt, state):
             for mid in bot_sent_ids(messages, after, sent_count):
                 if mid not in state["sent_ids"]:
                     state["sent_ids"].append(mid)
-            state["sent_ids"] = state["sent_ids"][-200:]
+            state["sent_ids"] = state["sent_ids"][-SENT_ID_HISTORY_LIMIT:]
         except Exception as e:
             log(cfg, "WARN", msg=f"전송 후 재조회 실패: {e}")
 
@@ -535,8 +519,6 @@ def build_arg_parser():
     p.add_argument("--min-gap", dest="min_gap", type=int, help="내 마지막 발화 후 최소 간격(초)")
     p.add_argument("--max-per-hour", dest="max_per_hour", type=int, help="시간당 최대 발화(0=무제한)")
     p.add_argument("--fetch-limit", dest="fetch_limit", type=int, help="한 번에 읽는 메시지 수")
-    p.add_argument("--assertiveness", type=int, choices=range(1, 6),
-                   help="응답 적극성 1(거의 침묵)~5(매우 적극적)")
     p.add_argument("--name", help="봇이 흉내낼 사람 이름(비우면 일반 문구/학습 시 자동값)")
     p.add_argument("--dry-run", dest="dry_run", action="store_true", default=None,
                    help="실제 전송 안 함(초안만)")
@@ -565,16 +547,14 @@ def main():
     examples = read_text_file(cfg.examples_path)
     if not style:
         print(f"WARN: {cfg.style_path} 가 없음. update_style.py 로 먼저 생성하세요.", file=sys.stderr)
-    system_prompt = build_system_prompt(style, examples, cfg.assertiveness,
-                                        cfg.bot_name, cfg.bot_aliases)
+    system_prompt = build_system_prompt(style, examples, cfg.bot_name, cfg.bot_aliases)
 
     cfg.chat_id, cfg.send_name = resolve_chat(cfg.target)
     log(cfg, "START", target=cfg.target, chat_id=cfg.chat_id, send_name=cfg.send_name,
         use_self=cfg.use_self, dry_run=cfg.dry_run, loop=args.loop, model=cfg.model,
         context_limit=cfg.context_limit, poll_seconds=cfg.poll_seconds,
         delay=f"{cfg.delay_min}-{cfg.delay_max}", min_gap=cfg.min_gap,
-        max_per_hour=cfg.max_per_hour, assertiveness=cfg.assertiveness,
-        bot_name=cfg.bot_name, bot_aliases=cfg.bot_aliases)
+        max_per_hour=cfg.max_per_hour, bot_name=cfg.bot_name, bot_aliases=cfg.bot_aliases)
 
     state = load_state(cfg)
 

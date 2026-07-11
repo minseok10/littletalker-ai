@@ -5,8 +5,8 @@
 
     1) 봇 실행        톡방을 골라 자율응답 봇 실행 (말투 미학습 시 먼저 학습)
     2) 말투 학습      톡방을 골라 STYLE.md/examples.txt 갱신
-    3) 톡방 목록 보기  카톡 톡방 목록 + 학습/적극성 상태
-    4) 톡방별 설정     응답 적극성 등 config.env 확인/변경
+    3) 톡방 목록 보기  카톡 톡방 목록 + 학습 상태
+    4) 톡방별 설정     이름·학습 방식 등 config.env 확인/변경
     0) 종료
 
 기존 kakao_bot.py / update_style.py 를 그대로 재사용한다
@@ -21,29 +21,6 @@ import subprocess
 
 import kakao_bot as kb   # .env 로드, kakaocli, ROOMS_DIR, sanitize_room, update_config_value 재사용
 import update_style as us  # infer_name_for_target (이름 자동 추론) 재사용
-
-
-# ── 응답 적극성 미리보기용 데이터 ──────────────────────────────────
-# 공통 예시 상황 하나를 두고, 각 레벨에서 봇(나)이 어떻게 반응하는지 보여준다.
-SAMPLE_SCENARIO = [
-    ("지현", "오늘 저녁 뭐 먹지"),
-    ("민수", "나는 치킨 땡기는데"),
-    ("지현", "ㅋㅋ 콜 시킬까"),
-]
-
-# level: (라벨, 한줄설명, [봇 반응 예시 줄들])
-ASSERTIVENESS_INFO = {
-    1: ("거의 침묵", "내 이름이 불리거나 나한테 직접 물을 때만 답",
-        ["(침묵) — 내 이름/직접 질문이 아니면 아예 반응 안 함"]),
-    2: ("소극적", "이름 언급·명확한 질문에만, 잡담엔 안 낌",
-        ["(대개 침묵) — 나한테 직접 물으면 그때만: 나도 치킨"]),
-    3: ("보통(기본)", "흐름상 자연스러우면 가벼운 리액션",
-        ["나도 치킨"]),
-    4: ("적극적", "곧잘 끼어들어 짧게 리액션·티키타카",
-        ["치킨 콜", "난 양념"]),
-    5: ("매우 적극적", "활발히 참여, 먼저 말 걸고 여러 메시지로",
-        ["오 좋아 나도", "어디서 시키지", "빨리 시키자"]),
-}
 
 
 # ── update_style.py 학습 파라미터 ────────────────────────────────
@@ -87,15 +64,6 @@ def room_target(chat_id, name):
 
 def read_config(target):
     return kb.parse_env_file(os.path.join(room_dir(target), "config.env"))
-
-
-def get_assertiveness(target):
-    cfg = read_config(target)
-    try:
-        lv = int(cfg.get("ASSERTIVENESS", kb.DEFAULTS["ASSERTIVENESS"]))
-    except (ValueError, TypeError):
-        return kb.DEFAULTS["ASSERTIVENESS"]
-    return lv if lv in ASSERTIVENESS_INFO else kb.DEFAULTS["ASSERTIVENESS"]
 
 
 def set_config_value(target, key, value):
@@ -159,38 +127,6 @@ def pick_chat():
     return cid, name
 
 
-# ── 응답 적극성 ──────────────────────────────────────────────────
-def show_assertiveness_examples(current=None):
-    print("\n=== 응답 적극성 미리보기 ===")
-    print("예시 단톡방 대화:")
-    for who, text in SAMPLE_SCENARIO:
-        print(f"    {who}> {text}")
-    print("\n위 상황에서 각 레벨의 봇(나) 반응:")
-    for lv in sorted(ASSERTIVENESS_INFO):
-        label, desc, reactions = ASSERTIVENESS_INFO[lv]
-        cur = "  ← 현재" if current == lv else ""
-        print(f"\n  [{lv}] {label} — {desc}{cur}")
-        for r in reactions:
-            print(f"        나> {r}")
-    print()
-
-
-def choose_assertiveness(target):
-    """예시를 보여주고 적극성을 고른다. config.env 에 저장하고 선택값을 반환."""
-    current = get_assertiveness(target)
-    show_assertiveness_examples(current)
-    sel = ask(f"적극성 레벨 선택 (1-5, Enter=유지 {current}): ")
-    if sel == "":
-        return current
-    if sel.isdigit() and int(sel) in ASSERTIVENESS_INFO:
-        lv = int(sel)
-        set_config_value(target, "ASSERTIVENESS", lv)
-        print(f"적극성을 {lv} ({ASSERTIVENESS_INFO[lv][0]})로 저장했습니다.")
-        return lv
-    print("잘못된 입력 — 변경 없이 유지합니다.")
-    return current
-
-
 # ── 학습 파라미터 ────────────────────────────────────────────────
 def show_learn_params(target):
     cfg = read_config(target)
@@ -199,6 +135,9 @@ def show_learn_params(target):
         cur = cfg.get(key, default)
         star = " *" if key in cfg else ""   # * = config.env에 저장된 값
         print(f"  {key} = {cur}{star}   ({desc})")
+    include = kb.truthy(cfg.get("INCLUDE_BOT_MESSAGES", "false"))
+    print(f"  INCLUDE_BOT_MESSAGES = {str(include).lower()}"
+          "   (기존 봇 발화를 말투·행동 학습에 포함)")
 
 
 def learn_args(target):
@@ -207,6 +146,10 @@ def learn_args(target):
     args = []
     for key, flag, default, _num, _desc in LEARN_PARAMS:
         args += [flag, str(cfg.get(key, default))]
+    if kb.truthy(cfg.get("INCLUDE_BOT_MESSAGES", "false")):
+        args.append("--include-bot-messages")
+    else:
+        args.append("--exclude-bot-messages")
     return args
 
 
@@ -225,6 +168,23 @@ def edit_learn_params(target):
             continue
         set_config_value(target, key, new)
         print(f"    → {key} = {new} 저장")
+
+
+def choose_bot_message_learning(target):
+    """기존 봇 발화를 다음 학습에 포함할지 선택하고 톡방 설정에 저장한다."""
+    current = kb.truthy(read_config(target).get("INCLUDE_BOT_MESSAGES", "false"))
+    label = "포함" if current else "제외"
+    print(f"\n현재 봇 발화 학습 설정: {label}")
+    sel = ask("기존 봇 발화를 학습에 포함할까요? (y=포함 / n=제외 / Enter=유지): ").lower()
+    if sel in ("y", "yes"):
+        current = True
+    elif sel in ("n", "no"):
+        current = False
+    elif sel != "":
+        print("잘못된 입력 — 기존 설정을 유지합니다.")
+    set_config_value(target, "INCLUDE_BOT_MESSAGES", str(current).lower())
+    print("→ 봇 발화를 " + ("포함합니다." if current else "제외합니다."))
+    return current
 
 
 # ── 봇 이름/별명 ─────────────────────────────────────────────────
@@ -260,7 +220,8 @@ def do_learn(chat=None):
     hint_txt = f" (표시이름 추정: {hint})" if hint else ""
     override = ask(f"대표 이름 직접 지정{hint_txt} — Enter=대화에서 자동 추출, 입력=지정: ").strip()
     edit_learn_params(target)
-    print(f"\n[{name}] 말투·이름·프로필 학습을 시작합니다...")
+    choose_bot_message_learning(target)
+    print(f"\n[{name}] 말투·행동·이름·프로필 학습을 시작합니다...")
     name_args = ["--name", override] if override else []
     return run_script("update_style.py", ["--target", target] + name_args + learn_args(target))
 
@@ -283,14 +244,7 @@ def do_run():
             print("말투 학습이 완료되지 않아 봇 실행을 취소합니다.")
             return
 
-    # 2) 응답 적극성
-    lv = get_assertiveness(target)
-    label = ASSERTIVENESS_INFO[lv][0]
-    print(f"\n현재 응답 적극성: {lv} ({label})")
-    if ask("적극성을 변경할까요? (예시 보기) (y/N): ").lower() in ("y", "yes"):
-        lv = choose_assertiveness(target)
-
-    # 3) 전송 대상 — 기본은 나와의 채팅, 실제 톡방만 이중 확인
+    # 2) 전송 대상 — 기본은 나와의 채팅, 실제 톡방만 이중 확인
     print("\n전송 방식을 선택하세요:")
     print("  1 = 나와의 채팅으로 전송 (기본·테스트용)")
     print("  2 = 선택한 실제 톡방에 전송")
@@ -310,9 +264,9 @@ def do_run():
             print("잘못된 입력 — 나와의 채팅으로 전송합니다.")
         delivery_args = ["--no-dry-run", "--use-self"]
 
-    args = ["--target", target, "--assertiveness", str(lv)] + delivery_args
+    args = ["--target", target] + delivery_args
 
-    # 4) 실행 방식 — 실행할 때마다 선택
+    # 3) 실행 방식 — 실행할 때마다 선택
     print("\n실행 방식:")
     print("  1 = 한 사이클만 실행 후 메뉴로 복귀")
     print("  2 = 루프로 지속 감시 (Ctrl+C 로 중단)")
@@ -332,8 +286,7 @@ def do_list():
     for i, (cid, name, disp) in enumerate(chats, 1):
         target = room_target(cid, name)
         if style_exists(target):
-            lv = get_assertiveness(target)
-            status = f"학습됨 · 적극성 {lv}({ASSERTIVENESS_INFO[lv][0]})"
+            status = "학습됨"
         else:
             status = "미학습"
         print(f"  {i:>2}) {disp}")
@@ -347,32 +300,32 @@ def do_settings():
     cid, name = chat
     target = room_target(cid, name)
     while True:
-        lv = get_assertiveness(target)
         cfg = read_config(target)
+        include_bot = kb.truthy(cfg.get("INCLUDE_BOT_MESSAGES", "false"))
         print(f"\n=== [{name}] 설정 ===")
         print(f"  room 폴더  : rooms/{kb.sanitize_room(target)}")
         print(f"  말투 학습  : {'예' if style_exists(target) else '아니오'}")
         print(f"  봇 이름    : {cfg.get('BOT_NAME') or '(미설정 — 일반 문구)'}")
         print(f"  이름/별명  : {cfg.get('BOT_ALIASES') or '(없음)'}")
-        print(f"  응답 적극성 : {lv} ({ASSERTIVENESS_INFO[lv][0]})")
+        print(f"  봇 발화 학습: {'포함' if include_bot else '제외'}")
         if cfg:
             print("  config.env :")
             for k, v in cfg.items():
                 print(f"      {k}={v}")
         else:
             print("  config.env : (없음 — 기본값 사용)")
-        print("\n  1) 응답 적극성 변경 (예시 보기)")
-        print("  2) 봇 이름/별명 변경")
-        print("  3) 학습 파라미터 변경")
+        print("\n  1) 봇 이름/별명 변경")
+        print("  2) 학습 파라미터 변경")
+        print("  3) 봇 발화 포함/제외 변경")
         print("  4) 말투 다시 학습")
         print("  0) 뒤로")
         sel = ask("선택: ")
         if sel == "1":
-            choose_assertiveness(target)
-        elif sel == "2":
             edit_identity(target)
-        elif sel == "3":
+        elif sel == "2":
             edit_learn_params(target)
+        elif sel == "3":
+            choose_bot_message_learning(target)
         elif sel == "4":
             do_learn((cid, name))
         elif sel in ("", "0"):
