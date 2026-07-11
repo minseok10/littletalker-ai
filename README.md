@@ -1,4 +1,6 @@
-# 카톡 단톡방 자율 응답 봇 🤖
+# LittleTalker AI 🤖
+
+> 나처럼 말하는 작은 AI
 
 [kakaocli](https://github.com/silver-flight-group/kakaocli)로 카카오톡 단톡방을 폴링하면서,
 톡방별로 학습한 **내 말투·이름·별명·프로필**(`STYLE.md`)로 **적절한 타이밍에만** 자율 응답하는 실험용 봇.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-카톡 단톡방 자율 응답 봇 (테스트용) — 멀티 톡방 / 설정 외부화 버전
+LittleTalker AI — 카톡 단톡방 자율 응답 봇
 
 각 톡방마다 rooms/<톡방이름>/ 폴더에 말투·상태·로그를 분리 보관한다:
     rooms/<TARGET>/STYLE.md       말투 프로파일 (톡방별)
@@ -509,7 +509,7 @@ def run_cycle(client, cfg, system_prompt, state):
 
 
 def build_arg_parser():
-    p = argparse.ArgumentParser(description="카톡 단톡방 자율 응답 봇")
+    p = argparse.ArgumentParser(description="LittleTalker AI — 카톡 단톡방 자율 응답 봇")
     p.add_argument("--target", help="톡방 이름(부분일치) 또는 chat-id")
     p.add_argument("--model")
     p.add_argument("--context-limit", dest="context_limit", type=int, help="LLM 맥락 메시지 수")

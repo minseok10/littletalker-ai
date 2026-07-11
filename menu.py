@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""kakaoo 대화형 CLI 메뉴.
+"""LittleTalker AI 대화형 CLI 메뉴.
 
 숫자를 입력해 메뉴를 오가며 봇을 다룬다:
 
@@ -350,9 +350,9 @@ def main():
 
     actions = {k: fn for k, _, fn in MENU}
     while True:
-        print("\n" + "=" * 34)
-        print("   kakaoo — 카톡 자율응답 봇")
-        print("=" * 34)
+        print("\n" + "=" * 48)
+        print("   LittleTalker AI — 나처럼 말하는 작은 AI")
+        print("=" * 48)
         for k, label, _ in MENU:
             print(f"  {k}) {label}")
         print("  0) 종료")
