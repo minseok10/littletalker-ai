@@ -119,13 +119,18 @@ def list_chats():
 
 
 def run_script(script, extra_args):
-    """kakao_bot.py / update_style.py 를 현재 venv 파이썬으로 실행하고 출력을 그대로 흘려보낸다."""
+    """하위 스크립트를 실행하고 성공 여부를 반환한다. 출력은 그대로 흘려보낸다."""
     cmd = [sys.executable, os.path.join(kb.HERE, script)] + extra_args
     print("\n$ " + " ".join(cmd) + "\n")
     try:
-        subprocess.run(cmd)
+        result = subprocess.run(cmd)
     except KeyboardInterrupt:
         print("\n(중단됨 — 메뉴로 돌아갑니다)")
+        return False
+    if result.returncode != 0:
+        print(f"\n(실행 실패 — 종료 코드 {result.returncode})")
+        return False
+    return True
 
 
 # ── 공통: 톡방 선택 ───────────────────────────────────────────────
@@ -244,7 +249,7 @@ def do_learn(chat=None):
     if chat is None:
         chat = pick_chat()
     if chat is None:
-        return
+        return False
     cid, name = chat
     target = room_target(cid, name)
     # 이름·별명·프로필은 학습 중 Opus가 이 톡방 대화에서 추출한다. 대표 이름을 직접 지정하려면 입력.
@@ -257,7 +262,7 @@ def do_learn(chat=None):
     edit_learn_params(target)
     print(f"\n[{name}] 말투·이름·프로필 학습을 시작합니다...")
     name_args = ["--name", override] if override else []
-    run_script("update_style.py", ["--target", target] + name_args + learn_args(target))
+    return run_script("update_style.py", ["--target", target] + name_args + learn_args(target))
 
 
 def do_run():
@@ -271,10 +276,11 @@ def do_run():
     if not style_exists(target):
         print(f"\n[{name}] 은 아직 말투(STYLE.md)를 학습하지 않았습니다.")
         yn = ask("봇 실행 전에 먼저 말투를 학습할까요? (Y/n): ").lower()
+        learned = False
         if yn in ("", "y", "yes"):
-            do_learn((cid, name))
-        if not style_exists(target):
-            print("말투가 아직 없어 봇 실행을 취소합니다.")
+            learned = do_learn((cid, name))
+        if not learned or not style_exists(target):
+            print("말투 학습이 완료되지 않아 봇 실행을 취소합니다.")
             return
 
     # 2) 응답 적극성
