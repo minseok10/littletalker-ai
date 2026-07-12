@@ -5,7 +5,7 @@
 [수정판 kakaocli](https://github.com/minseok10/kakaocli/tree/local-build)로 카카오톡 단톡방을 폴링하면서,
 톡방별로 학습한 **내 말투·이름·별명·프로필**(`STYLE.md`)로 **적절한 타이밍에만** 자율 응답하는 실험용 봇.
 "언제 말하고 언제 침묵할지"와 "무슨 말투로 답할지"는 OpenRouter를 경유한 Claude가 판단하며,
-숫자 입력식 대화형 메뉴(`menu.py`)로 학습·실행·설정을 모두 다룰 수 있다.
+설치 후 `littletalker` 명령으로 여는 숫자 입력식 메뉴에서 학습·실행·설정을 모두 다룰 수 있다.
 
 언제 말하고 언제 침묵할지, 먼저 말을 거는 빈도, 상황별 반응, 티키타카 길이와 메시지 분할까지
 고정 규칙 대신 톡방별 `STYLE.md`에 학습된 실제 행동 패턴을 따른다.
@@ -18,7 +18,7 @@
 
 ## ✨ 특징
 
-- **대화형 메뉴** — `menu.py` 하나로 톡방 선택·학습·실행·설정을 숫자 입력으로 처리(권장 진입점).
+- **대화형 메뉴** — 설치 후 `littletalker` 명령 하나로 톡방 선택·학습·실행·설정을 숫자 입력으로 처리.
 - **행동 패턴 전체 학습** — 발화 여부·빈도·주도성·상황별 반응·티키타카·길이·분할·문체를 `STYLE.md`에 통합 학습.
 - **내 말투 모사** — 톡방별 `STYLE.md`(관찰된 행동·말투 규칙) + `examples.txt`(실제 대화 예시)를 시스템 프롬프트로 사용.
 - **이름·별명·프로필 자동 학습** — 그 톡방 대화를 Opus로 분석해 내가 불리는 이름/별명(방마다 다름)과 관계·화제 프로필을 추출 → 응답 적합성 향상.
@@ -186,7 +186,7 @@ KAKAOCLI_BIN="$HOME/.local/bin/kakaocli" .venv/bin/python menu.py
 ## 📂 폴더 구조
 
 ```
-menu.py               대화형 메뉴(권장 진입점) — 아래 두 스크립트를 대신 실행
+menu.py               `littletalker` 명령이 실행하는 대화형 메뉴 본체
 kakao_bot.py          봇 본체 (읽기·응답 판단·전송)
 update_style.py       학습 스크립트 (말투 + 이름·별명·프로필)
 .env                  OpenRouter API 키(시크릿) — git 제외
@@ -208,13 +208,19 @@ rooms/
 
 ## 🕹️ 사용
 
-### 대화형 메뉴 (`menu.py`) — 권장
+### 대화형 메뉴 — 권장
 
-숫자만 입력해 톡방을 고르고 봇을 다룰 수 있는 대화형 진입점이다. 인수를 외울 필요 없이
-`kakao_bot.py`/`update_style.py`를 대신 실행해 준다.
+간편 설치했다면 `littletalker`를 실행한다. 숫자만 입력해 톡방을 고르고 봇을 다룰 수 있으며,
+`kakao_bot.py`와 `update_style.py`의 인수를 외울 필요가 없다.
 
 ```bash
-.venv/bin/python menu.py
+littletalker
+```
+
+소스를 직접 clone해 설치한 경우에만 다음처럼 메뉴 본체를 실행한다.
+
+```bash
+KAKAOCLI_BIN="$HOME/.local/bin/kakaocli" .venv/bin/python menu.py
 ```
 
 ```
@@ -242,7 +248,7 @@ rooms/
 - **학습 파라미터**(`--my-messages`·`--pairs`·`--fetch-limit`·`--model`)는 학습 시 조정할 수 있고,
   `rooms/<톡방>/config.env`(`MY_MESSAGES`·`PAIRS`·`STYLE_FETCH_LIMIT`·`STYLE_MODEL`)에 저장돼 톡방별로 유지된다.
 
-### 직접 실행 (`kakao_bot.py`)
+### 소스에서 직접 실행 (`kakao_bot.py`)
 
 ```bash
 # 한 사이클(테스트)
@@ -339,7 +345,7 @@ rooms/
 | `littletalker: command not found` | 설치 후 새 터미널을 열거나 `source ~/.zprofile` 실행. 그래도 안 되면 `~/.local/bin/littletalker`가 있는지 확인 |
 | 설치 중 `kakaocli 빌드에 실패했습니다` | macOS 소프트웨어 업데이트에서 Xcode Command Line Tools를 갱신. `swift --version`과 `xcode-select -p`도 확인. 전체 Xcode를 쓴다면 올바른 Xcode가 선택됐는지 확인 |
 | `OPENROUTER_API_KEY 가 필요합니다` | `.env`에 키를 넣었는지 확인. VS Code라면 환경변수 주입 설정 영향일 수 있음 — 셸에서 직접 실행해보기 |
-| `401 authentication_error` / `Invalid bearer token` (키는 유효한데 실패) | 환경에 `ANTHROPIC_BASE_URL`이 설정돼 있으면 SDK가 OpenRouter가 아닌 그쪽으로 요청을 보냄. `unset ANTHROPIC_BASE_URL` 후 실행하거나, 그 변수가 없는 깨끗한 셸에서 `.venv/bin/python menu.py` 실행 |
+| `401 authentication_error` / `Invalid bearer token` (키는 유효한데 실패) | 환경에 `ANTHROPIC_BASE_URL`이 설정돼 있으면 SDK가 OpenRouter가 아닌 그쪽으로 요청을 보냄. `unset ANTHROPIC_BASE_URL` 후 `littletalker`를 다시 실행 |
 | 톡방 목록을 읽지 못함 | 터미널의 전체 디스크 접근 권한을 확인하고 터미널을 완전히 재시작. 설치판 진단은 `~/.local/share/littletalker-ai/bin/kakaocli chats`로 가능 |
 | 전송이 안 되고 `not found in the chat list` | kakaocli가 접근성 트리에서 톡방 이름을 못 찾는 경우. 카카오톡 버전에 따라 이름이 담긴 AX 노드 식별자가 바뀔 수 있음. 설치판의 전용 바이너리인지 확인하고 이슈에 카카오톡 버전과 증상을 첨부 |
 | 전송 시 `launching` 상태로 실패 | 카카오톡 앱이 메인(로그인) 화면이어야 함. 재로그인 후 재시도 |
