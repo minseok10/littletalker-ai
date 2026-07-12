@@ -78,6 +78,28 @@
 
 ## 🚀 빠른 시작
 
+### 간편 설치 (권장)
+
+아래 한 줄로 LittleTalker AI와 전용 수정판 `kakaocli`를 함께 설치한다.
+수정판은 `minseok10/kakaocli`의 `local-build` 브랜치에서 직접 빌드되며,
+시스템에 설치된 다른 `kakaocli`와 분리된다.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/minseok10/littletalker-ai/main/install.sh | sh
+```
+
+설치가 끝난 뒤 새 터미널에서 실행한다.
+
+```bash
+littletalker
+```
+
+처음 설치할 때 OpenRouter API 키를 묻는다. Xcode Command Line Tools가 없는 경우에는
+macOS 설치 창을 완료한 뒤 위 명령을 한 번 더 실행하면 된다. 같은 명령을 다시 실행하면
+LittleTalker AI와 수정판 `kakaocli`가 최신 브랜치 내용으로 갱신된다.
+
+### 직접 설치
+
 ```bash
 # 1) 가상환경 + 의존성 (PEP 668 때문에 venv 권장)
 python3 -m venv .venv

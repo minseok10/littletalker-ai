@@ -34,6 +34,7 @@ ROOMS_DIR = os.path.join(HERE, "rooms")
 GLOBAL_ENV = os.path.join(HERE, ".env")
 GLOBAL_STOP = os.path.join(HERE, "STOP")
 SENT_ID_HISTORY_LIMIT = 10000  # 말투 재학습 때 과거 봇 발화를 포함/제외하기 위한 이력
+KAKAOCLI_BIN = os.environ.get("KAKAOCLI_BIN", "kakaocli")
 
 # 내장 기본값
 DEFAULTS = {
@@ -160,7 +161,7 @@ def save_state(cfg, state):
 
 
 def kakaocli(args):
-    res = subprocess.run(["kakaocli"] + args, capture_output=True, text=True)
+    res = subprocess.run([KAKAOCLI_BIN] + args, capture_output=True, text=True)
     if res.returncode != 0:
         raise RuntimeError(f"kakaocli {args} 실패: {res.stderr.strip()}")
     return res.stdout
